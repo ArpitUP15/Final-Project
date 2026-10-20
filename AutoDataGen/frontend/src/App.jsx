@@ -321,7 +321,7 @@ export default function App() {
             <button 
               onClick={() => {
                 if (user) {
-                  scrollToSection('features');
+                  window.location.href = 'http://127.0.0.1:5173/';
                 } else {
                   setAuthMode('login');
                   setCurrentView('auth');
