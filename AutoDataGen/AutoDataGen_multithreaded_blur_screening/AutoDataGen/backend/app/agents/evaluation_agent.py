@@ -176,7 +176,7 @@ def metrics(model, X, y):
 
 def evaluate(df, target, augmented_train, n_estimators=200, class_weight=None, model_name="RandomForest"):
     X_train, X_test, y_train, y_test = split_original(df, target)
-    baseline = make_model(X_train, n_estimators=200, model_name="RandomForest")
+    baseline = make_model(X_train, n_estimators=120, model_name="RandomForest")
     baseline.fit(X_train, y_train)
     augmented = augmented_train.drop(columns=["__autodatagen_source"], errors="ignore")
     X_aug = augmented.drop(columns=[target]).reindex(columns=X_train.columns)

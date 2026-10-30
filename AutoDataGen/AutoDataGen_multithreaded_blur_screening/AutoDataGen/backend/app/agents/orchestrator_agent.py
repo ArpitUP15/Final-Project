@@ -345,10 +345,8 @@ def orchestrate_iterations(
         candidate_started = time.monotonic()
         weight = "balanced" if method == "ClassWeight" and model_name not in {"KNeighbors"} else None
         try:
-            # Screen every candidate on one identical fixed validation split. Baseline
-            # stability is measured on three splits above; the final shortlist is selected
-            # without touching the test set. This bounds search cost for larger iteration budgets.
-            for split_idx, (X_fit, X_val, y_fit, y_val) in enumerate(baseline_splits[:1]):
+            # Compare every candidate with the baseline on the same validation splits.
+            for X_fit, X_val, y_fit, y_val in baseline_splits:
                 if cancel_callback and cancel_callback():
                     raise InterruptedError("Cancellation requested")
                 fit_df = X_fit.copy()
@@ -373,8 +371,13 @@ def orchestrate_iterations(
         accuracy = sum(candidate_accuracies) / len(candidate_accuracies) if candidate_accuracies else None
         score = sum(candidate_scores) / len(candidate_scores) if candidate_scores else None
         macro_f1 = sum(candidate_f1s) / len(candidate_f1s) if candidate_f1s else None
-        accuracy_preserved = accuracy is not None and accuracy + 1e-12 >= baseline_accuracy
-        objective_preserved = score is not None and score + 1e-12 >= baseline_score
+        accuracy_preserved = (
+            len(candidate_accuracies) == len(baseline_accuracy_scores)
+            and all(
+                candidate + 1e-12 >= baseline
+                for candidate, baseline in zip(candidate_accuracies, baseline_accuracy_scores)
+            )
+        )
         accuracy_improved = accuracy is not None and accuracy > baseline_accuracy + 1e-12
         score_improved = score is not None and score > baseline_score + 1e-12
         candidate_elapsed = time.monotonic() - candidate_started
@@ -397,9 +400,10 @@ def orchestrate_iterations(
             "candidate_timeout_seconds": candidate_timeout_seconds,
             "status": "target_reached" if target_reached else (
                 "candidate_timeout" if candidate_timed_out else
+                "error" if error else
                 "rejected_accuracy_regression" if accuracy is not None and not accuracy_preserved else
                 "rejected_no_objective_improvement" if score is not None and not accepted else
-                "error" if error else "evaluated"), "error": error,
+                "evaluated"), "error": error,
         }
         history.append(item)
         if accepted and (score > best["selection_score"] + 1e-12 or
@@ -421,7 +425,7 @@ def orchestrate_iterations(
     if cancel_callback and cancel_callback():
         stop_reason = "cancelled_by_user"
 
-    output_strategy_name = best["strategy"] if not best["is_baseline_fallback"] else "SimilarityOverSampler"
+    output_strategy_name = best["strategy"]
     selected_strategy = {**initial_strategy, "strategy": output_strategy_name, "model_name": best["model_name"]}
     full_train = X_train.copy()
     full_train[target_column] = y_train.to_numpy()
@@ -431,12 +435,12 @@ def orchestrate_iterations(
     metadata["class_weight"] = best["class_weight"]
     metadata["model_candidate_accepted"] = not best["is_baseline_fallback"]
     if best["is_baseline_fallback"]:
-        metadata["note"] = str(metadata.get("note", "")) + " No candidate improved the validation objective while preserving raw accuracy; baseline model retained and SimilarityOverSampler still generated export rows."
+        metadata["note"] = str(metadata.get("note", "")) + " No candidate improved the validation objective while preserving accuracy on every validation split; the unaugmented baseline was retained."
 
     completed = len(history)
     search = {
         "dataset_balance": "imbalanced" if is_imbalanced else "balanced", "imbalance_ratio": round(imbalance_ratio, 4),
-        "selection_metric": objective, "validation_splits": 1, "baseline_validation_accuracy": round(baseline_accuracy, 6),
+        "selection_metric": objective, "validation_splits": len(baseline_splits), "baseline_validation_accuracy": round(baseline_accuracy, 6),
         "baseline_validation_balanced_accuracy": round(baseline_balanced_accuracy, 6),
         "high_baseline_threshold": high_baseline_threshold, "max_iterations": cap,
         "planned_iterations": planned_iterations, "iteration_budget": planned_iterations,
