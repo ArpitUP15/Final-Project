@@ -26,6 +26,23 @@ uv run uvicorn app.main:app --reload
 
 API docs: http://127.0.0.1:8000/docs
 
+### Windows: pandas DLL blocked by Application Control
+
+If startup fails with `ImportError: DLL load failed ... An Application Control policy has blocked this file` while importing pandas, Windows is preventing a compiled pandas extension from loading. This is an operating-system security-policy decision, not a FastAPI or Python-code error.
+
+1. If this project is under `Downloads`, move or clone it to a development folder permitted by your organization's Windows security policy.
+2. In the project's `backend` folder, recreate the virtual environment and verify pandas imports:
+
+   ```powershell
+   Remove-Item -Recurse -Force .venv
+   uv sync
+   uv run python -c "import pandas; print(pandas.__version__)"
+   uv run uvicorn app.main:app --reload
+   ```
+
+   Removing `.venv` deletes only the generated Python environment; it does not remove source files or datasets.
+3. If the import is still blocked, check the Windows **CodeIntegrity > Operational** log in Event Viewer and ask your administrator to authorize the blocked Python/pandas files under the applicable policy. Do not disable Application Control or bypass the policy.
+
 ### Backend (macOS/Linux)
 
 ```bash
@@ -213,7 +230,7 @@ The image augmentation workflow is exposed on the dedicated **Image augmentation
 2. **Evaluation and selection:** every generated image is reopened/verified; detection labels are parsed and bounds-checked; segmentation image/mask dimensions are checked. The image-specific report records generated/skipped items and annotation checks. For classification datasets with `train/<class>/` and `val/<class>/`, a deterministic baseline and augmented-data RandomForest are compared on the same validation split; variants are rejected if validation accuracy regresses. This lightweight guard is a safety baseline, not a guarantee of production model quality.
 3. **Object detection:** image/YOLO-label pairs are transformed together with label integrity checks.
 4. **Segmentation:** images and masks receive matching spatial decisions and mask-safe interpolation.
-5. **Frontend integration:** choose task and mode, set variants, inspect the report/previews, and download the output ZIP. The ZIP includes `autodatagen_image_report.json`.
+5. **Frontend integration:** choose task and mode, set variants, inspect the report/previews, and download the output ZIP. Required visual blur screening runs before augmentation using grayscale Laplacian variance, downscaling images larger than 256×256. Readable non-mask images scoring below the configurable threshold (default 100) are removed; unreadable images and masks are retained. This is a sharpness heuristic, so naturally low-texture images may also score low. Paired labels/masks for removed images are also removed. The ZIP includes `autodatagen_image_report.json`.
 
 ### API example
 
@@ -223,7 +240,7 @@ curl.exe -X POST http://127.0.0.1:8000/api/image-augmentation `
   -F "mode=offline" -F "variants_per_image=2"
 ```
 
-The response includes a `download_url` for the generated ZIP. Supported task values are `classification`, `detection`, and `segmentation`. Modes are `offline` and `training`. Training mode returns the source data plus an explicit augmentation manifest; use `ImageAugmentationDataset` in a Python training loop to apply dynamic classification transforms. The classification guard trains a lightweight validation model when a proper validation split is present; it does not claim that this model is suitable for production or guarantee accuracy improvements.
+The response includes a `download_url` for the generated ZIP. Supported task values are `classification`, `detection`, and `segmentation`. Modes are `offline` and `training`. Training mode returns the visually screened source data plus an explicit augmentation manifest; use `ImageAugmentationDataset` in a Python training loop to apply dynamic classification transforms. The classification guard trains a lightweight validation model when a proper validation split is present; it does not claim that this model is suitable for production or guarantee accuracy improvements.
 
 ## Unified multimodal dataset pipeline
 

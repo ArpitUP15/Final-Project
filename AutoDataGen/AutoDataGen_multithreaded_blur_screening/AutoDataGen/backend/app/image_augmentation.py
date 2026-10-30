@@ -70,14 +70,122 @@ def _image_bytes(img, suffix):
     return buf.getvalue()
 
 
+def _sharpness_score(content: bytes) -> float:
+    """Measure grayscale edge detail, downscaling large images for bounded cost."""
+    with Image.open(io.BytesIO(content)) as image:
+        gray = image.convert("L")
+    gray.thumbnail((256, 256), Image.Resampling.LANCZOS)
+    pixels = np.asarray(gray, dtype=np.float32)
+    padded = np.pad(pixels, 1, mode="edge")
+    laplacian = (
+        padded[:-2, 1:-1]
+        + padded[2:, 1:-1]
+        + padded[1:-1, :-2]
+        + padded[1:-1, 2:]
+        - 4 * pixels
+    )
+    return float(np.var(laplacian))
+
+
+def screen_blurry_images(files: dict[str, bytes], threshold_score: float = 100.0):
+    """Remove readable non-mask images whose visual sharpness score is too low."""
+    if not math.isfinite(float(threshold_score)) or float(threshold_score) < 0:
+        raise ValueError("blur_threshold must be a finite non-negative sharpness score")
+    threshold_score = float(threshold_score)
+    unreadable = []
+    scores = {}
+    for name, content in files.items():
+        if not _is_image(name):
+            continue
+        parts = {part.lower() for part in PurePosixPath(name).parts}
+        try:
+            if parts.intersection({"mask", "masks", "label", "labels"}):
+                with Image.open(io.BytesIO(content)) as image:
+                    image.verify()
+                continue
+            scores[name] = _sharpness_score(content)
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            unreadable.append({"file": name, "reason": f"could_not_decode_image: {exc}"})
+
+    flagged = []
+    bad_names = set()
+    for name, score in scores.items():
+        if score < threshold_score:
+            bad_names.add(name)
+            flagged.append({
+                "file": name,
+                "sharpness_score": round(score, 4),
+                "threshold_score": threshold_score,
+                "action": "removed_from_dataset",
+            })
+    working = {name: content for name, content in files.items() if name not in bad_names}
+    return working, {
+        "enabled": True,
+        "method": "grayscale_laplacian_variance_max_256",
+        "threshold_score": threshold_score,
+        "total_images": sum(_is_image(name) for name in files),
+        "images_scored": len(scores),
+        "unreadable_count": len(unreadable),
+        "unreadable_images": unreadable,
+        "flagged_count": len(bad_names),
+        "removed_from_augmentation": len(bad_names),
+        "removed_from_dataset": len(bad_names),
+        "flagged_images": flagged,
+        "policy": "Only readable non-mask images with a sharpness score below the configured threshold are removed; unreadable images and masks are retained.",
+        "caveat": "Laplacian variance is a visual sharpness heuristic; naturally low-texture images can also receive low scores.",
+    }
+
+
+def _remove_paired_annotations(files, removed_images, task_type):
+    """Drop labels/masks paired with screened images to avoid orphan annotations."""
+    out = dict(files)
+    removed_annotations = 0
+    annotation_dir = {"detection": {"image": "label", "images": "labels"},
+                      "segmentation": {"image": "mask", "images": "masks"}}.get(task_type)
+    if not annotation_dir:
+        return out, removed_annotations
+
+    for image_name in removed_images:
+        parts = list(PurePosixPath(image_name).parts)
+        for index, part in enumerate(parts[:-1]):
+            replacement = annotation_dir.get(part.lower())
+            if replacement is None:
+                continue
+            annotation_parts = parts.copy()
+            annotation_parts[index] = replacement
+            if task_type == "detection":
+                annotation_parts[-1] = f"{Path(image_name).stem}.txt"
+                candidates = [str(PurePosixPath(*annotation_parts))]
+            else:
+                image_stem = Path(image_name).stem
+                annotation_parent = PurePosixPath(*annotation_parts[:-1])
+                candidates = [
+                    name for name in out
+                    if _is_image(name)
+                    and Path(name).stem == image_stem
+                    and PurePosixPath(name).parent == annotation_parent
+                ]
+            for candidate in candidates:
+                if candidate in out:
+                    del out[candidate]
+                    removed_annotations += 1
+            break
+    return out, removed_annotations
+
+
 def _classification_metrics(files, *, augmented: bool):
     """Fast, bounded RGB-pixel baseline used only as a lightweight validation guard.
 
     Evaluation is deliberately capped so a large ZIP does not spend most of its
     runtime fitting a diagnostic model. The report records when sampling occurs.
     """
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import accuracy_score
+    import importlib
+
+    try:
+        RandomForestClassifier = importlib.import_module("sklearn.ensemble").RandomForestClassifier
+        accuracy_score = importlib.import_module("sklearn.metrics").accuracy_score
+    except ModuleNotFoundError:
+        return None
 
     max_train = 300
     max_val = 200
@@ -108,10 +216,22 @@ def _classification_metrics(files, *, augmented: bool):
         with Image.open(io.BytesIO(content)) as im:
             im=im.convert("RGB").resize((16,16),Image.Resampling.BILINEAR)
             return np.asarray(im,dtype=np.uint8).reshape(-1)
-    x_train=np.stack([feature(content) for _,content,_ in train_rows])
-    y_train=[label for _,_,label in train_rows]
-    x_val=np.stack([feature(content) for _,content,_ in val_rows])
-    y_val=[label for _,_,label in val_rows]
+    def valid_features(rows):
+        features, labels = [], []
+        for _, content, label in rows:
+            try:
+                features.append(feature(content))
+                labels.append(label)
+            except (OSError, ValueError):
+                continue
+        return features, labels
+
+    train_features, y_train = valid_features(train_rows)
+    val_features, y_val = valid_features(val_rows)
+    if len(set(y_train)) < 2 or not val_features:
+        return None
+    x_train=np.stack(train_features)
+    x_val=np.stack(val_features)
     model=RandomForestClassifier(n_estimators=30, max_depth=16, random_state=2026,
                                  n_jobs=_worker_count(), class_weight="balanced")
     model.fit(x_train,y_train)
@@ -324,23 +444,32 @@ def transform_segmentation_pair(image: Image.Image, mask: Image.Image, seed=42):
         raise ValueError("Image/mask alignment failed after augmentation.")
     return transformed_image, transformed_mask
 
-def augment_image_zip(data: bytes, task_type="classification", mode="offline", variants_per_image=2, seed=42, max_workers=None):
+def augment_image_zip(data: bytes, task_type="classification", mode="offline", variants_per_image=2, seed=42, max_workers=None, blur_filter=True, blur_threshold=100.0):
     if task_type not in {"classification","detection","segmentation"}: raise ValueError("task_type must be classification, detection, or segmentation")
     if mode not in {"offline","training"}: raise ValueError("mode must be offline or training")
     if not 1 <= int(variants_per_image) <= 10: raise ValueError("variants_per_image must be between 1 and 10")
+    if not blur_filter: raise ValueError("Visual blur screening is required before image augmentation.")
     files=_read_zip(data)
     source_file_count = len(files)
     if not any(_is_image(n) for n in files): raise ValueError("ZIP contains no supported images.")
-    # Training-time mode records augmentation configuration and leaves source data intact.
-    # The same engine/config can be invoked dynamically by a training data loader.
+    working_files, blur_report = screen_blurry_images(files, float(blur_threshold))
+    removed_images = {
+        name for name in files
+        if _is_image(name) and name not in working_files
+    }
+    working_files, removed_annotations = _remove_paired_annotations(
+        working_files, removed_images, task_type
+    )
+    blur_report["removed_annotations"] = removed_annotations
+    blur_report["removed_from_dataset"] = len(removed_images)
     if mode=="training":
-        manifest={"task_type":task_type,"mode":"training-time","seed":int(seed),"transforms":["horizontal_flip","small_rotation","random_crop_zoom","brightness","contrast","gaussian_noise","light_blur"],"note":"Dynamic transforms are applied by the training loader; no derived image files are saved in this mode."}
+        files = dict(working_files)
+        manifest={"task_type":task_type,"mode":"training-time","seed":int(seed),"blur_screening": blur_report, "transforms":["horizontal_flip","small_rotation","random_crop_zoom","brightness","contrast","gaussian_noise","light_blur"],"note":"The exported dataset contains only images retained by visual blur screening. Dynamic transforms are applied by the training loader; no derived image files are saved in this mode."}
         files["autodatagen_augmentation_manifest.json"]=json.dumps(manifest,indent=2).encode()
-        stats={"generated_images":0,"source_images":sum(_is_image(n) for n in files),"mode":"training-time","manifest":"autodatagen_augmentation_manifest.json","note":"This ZIP contains the original data plus a reproducible augmentation manifest. Use AutoDataGen's training loader to apply transforms dynamically."}
+        stats={"generated_images":0,"source_images":sum(_is_image(n) for n in working_files),"mode":"training-time","manifest":"autodatagen_augmentation_manifest.json","note":"This ZIP contains the visually screened data plus a reproducible augmentation manifest. Use AutoDataGen's training loader to apply transforms dynamically."}
     elif task_type=="classification":
-        original_files=dict(files)
-        baseline=_classification_metrics(original_files,augmented=False)
-        files,stats=_augment_classification(files,int(variants_per_image),int(seed),max_workers)
+        baseline=_classification_metrics(working_files,augmented=False)
+        files,stats=_augment_classification(working_files,int(variants_per_image),int(seed),max_workers)
         candidate=_classification_metrics(files,augmented=True)
         if baseline is not None and candidate is not None:
             accepted=candidate["accuracy"] >= baseline["accuracy"]
@@ -351,7 +480,7 @@ def augment_image_zip(data: bytes, task_type="classification", mode="offline", v
                 stats["rejected_images"]=stats.get("generated_images",0)
                 stats["accepted_images"]=0
                 stats["generated_images"]=0
-                stats["selection"]="rejected: validation accuracy regressed; original dataset retained"
+                stats["selection"]="rejected: validation accuracy regressed; screened dataset retained"
                 stats["previews"]=[]
             else:
                 stats["accepted_images"]=stats.get("generated_images",0)
@@ -360,12 +489,15 @@ def augment_image_zip(data: bytes, task_type="classification", mode="offline", v
         else:
             stats["model_evaluation"]={"available":False,"reason":"A train/<class>/ and val/<class>/ split with at least two classes is required for the image accuracy guard."}
             stats["selection"]="image integrity validated; model accuracy guard not run (validation split unavailable)"
-    elif task_type=="detection": files,stats=_augment_detection(files,int(variants_per_image),int(seed),max_workers)
-    else: files,stats=_augment_segmentation(files,int(variants_per_image),int(seed),max_workers)
+    elif task_type=="detection":
+        files, stats = _augment_detection(working_files,int(variants_per_image),int(seed),max_workers)
+    else:
+        files, stats = _augment_segmentation(working_files,int(variants_per_image),int(seed),max_workers)
     # Validate image bytes and dimensions for every generated image.
     for name in files:
         if "__aug" in name and _is_image(name):
             with Image.open(io.BytesIO(files[name])) as im: im.verify()
+    stats["blur_screening"] = blur_report
     stats.update({"task_type":task_type,"mode":mode,"parallel_processing": mode == "offline","validation":"passed" if not stats.get("skipped") else "passed_with_skips","source_file_count":source_file_count,"output_file_count":len(files),"seed":int(seed)})
     # Explicitly separate data/annotation validation from model-level evaluation.
     if task_type == "classification":

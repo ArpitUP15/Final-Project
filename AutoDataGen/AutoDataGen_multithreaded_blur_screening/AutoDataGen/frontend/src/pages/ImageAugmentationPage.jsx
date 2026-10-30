@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, Download, Upload } from "lucide-react";
 import PageHeading from "../components/PageHeading.jsx";
 import Metric from "../components/Metric.jsx";
+import BlurScreeningSummary from "../components/BlurScreeningSummary.jsx";
 import ImageReport from "../components/ImageReport.jsx";
 import { api, apiUrl, errorMessage, validateFile } from "../lib/api.js";
 
@@ -166,6 +167,7 @@ export default function ImageAugmentationPage() {
             />
           </div>
           <p className="notice">{analysis.summary}</p>
+          <BlurScreeningSummary blurScreening={analysis.blur_screening} />
           {analysis.corrupt_images?.length > 0 && (
             <p className="warning">
               Corrupt or unreadable images: {analysis.corrupt_images.length}.

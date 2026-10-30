@@ -29,6 +29,8 @@ def _text_profile(df: pd.DataFrame) -> dict:
 
 def _analyze_image_zip(content: bytes) -> dict:
     from PIL import Image
+    from app.image_augmentation import screen_blurry_images
+
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         entries = [i for i in zf.infolist() if not i.is_dir()]
         unsafe = [i.filename for i in entries if PurePosixPath(i.filename).is_absolute() or ".." in PurePosixPath(i.filename).parts]
@@ -37,6 +39,9 @@ def _analyze_image_zip(content: bytes) -> dict:
         image_entries = [i for i in entries if Path(i.filename).suffix.lower() in IMAGE_EXTS]
         if not image_entries:
             raise ValueError("ZIP archive contains no supported image files.")
+        _, blur_screening = screen_blurry_images(
+            {item.filename: zf.read(item) for item in image_entries}
+        )
         splits, classes, image_details, corrupt = Counter(), Counter(), [], []
         annotation_files = []
         for item in entries:
@@ -59,6 +64,7 @@ def _analyze_image_zip(content: bytes) -> dict:
         dims = Counter(f"{x['width']}x{x['height']}" for x in image_details)
         return {"dataset_type": "image", "modality": "image", "task_type": task,
                 "file_count": len(entries), "image_count": len(image_entries), "valid_image_count": len(image_details),
+                "blur_screening": blur_screening,
                 "corrupt_images": corrupt, "image_formats": dict(Counter(Path(i.filename).suffix.lower() for i in image_entries)),
                 "dimensions_distribution": dict(dims.most_common(12)), "split_or_root_distribution": dict(splits),
                 "class_or_folder_distribution": dict(classes), "annotation_file_count": len(annotation_files),

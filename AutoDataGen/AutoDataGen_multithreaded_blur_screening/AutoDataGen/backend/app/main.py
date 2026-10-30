@@ -84,6 +84,8 @@ async def image_augmentation(
     mode: Annotated[str, Form()] = "offline",
     variants_per_image: Annotated[int, Form()] = 2,
     seed: Annotated[int, Form()] = 42,
+    blur_filter: Annotated[bool, Form()] = True,
+    blur_threshold: Annotated[float, Form()] = 100.0,
 ):
     """Augment an image dataset ZIP. Supports class folders, YOLO labels, or segmentation masks."""
     if not (file.filename or "").lower().endswith(".zip"):
@@ -115,7 +117,7 @@ async def image_augmentation(
         # PIL transforms and scikit-learn evaluation are CPU-bound; do not block
         # FastAPI's event loop while the dataset is being processed.
         output, report = await run_in_threadpool(
-            augment_image_zip, content, task_type, mode, variants_per_image, seed
+            augment_image_zip, content, task_type, mode, variants_per_image, seed, None, blur_filter, blur_threshold
         )
     except (ValueError, zipfile.BadZipFile) as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -195,6 +197,8 @@ async def unified_augment(
     target_accuracy: Annotated[float, Form()] = DEFAULT_TARGET_ACCURACY,
     stretch_target: Annotated[float, Form()] = DEFAULT_STRETCH_TARGET,
     total_time_budget_seconds: Annotated[float, Form()] = DEFAULT_TOTAL_TIME_BUDGET_SECONDS,
+    blur_filter: Annotated[bool, Form()] = True,
+    blur_threshold: Annotated[float, Form()] = 100.0,
 ):
     """Unified modality router. Image ZIPs use the image agent; text/tabular files use the existing LangGraph agents."""
     filename = file.filename or "dataset.csv"
@@ -209,7 +213,7 @@ async def unified_augment(
     if Path(filename).suffix.lower() == ".zip":
         try:
             output, report = augment_image_zip(content, image_task_type, image_mode,
-                                               max(1, min(20, int(variants_per_image))), int(seed))
+                                               max(1, min(20, int(variants_per_image))), int(seed), None, blur_filter, blur_threshold)
         except (ValueError, zipfile.BadZipFile) as exc:
             raise HTTPException(400, str(exc)) from exc
         evaluation_scope = (

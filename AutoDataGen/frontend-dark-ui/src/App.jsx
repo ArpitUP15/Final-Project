@@ -27,6 +27,8 @@ const datasetTypes = [
   { key: 'image', label: 'Image', icon: FileImage, hint: 'Image collections' },
 ];
 
+const workflowUrl = 'http://127.0.0.1:5173/';
+
 export default function App() {
   const [currentView, setCurrentView] = useState('home');
   const [authMode, setAuthMode] = useState('login');
@@ -56,6 +58,14 @@ export default function App() {
     setUser({ name: authMode === 'signup' ? name.trim() : email.split('@')[0], email });
     setPassword('');
     setCurrentView('home');
+  };
+
+  const startWorkflow = () => {
+    if (user) {
+      window.location.assign(workflowUrl);
+      return;
+    }
+    openAuth('signup');
   };
 
   if (currentView === 'auth') {
@@ -109,7 +119,7 @@ export default function App() {
             <h1>Better training data,<br /><span>built with intent.</span></h1>
             <p className="hero-description">Analyze a dataset, choose an augmentation strategy, and evaluate the result through a coordinated agent workflow.</p>
             <div className="hero-actions">
-              <button className="button button-primary" onClick={() => user ? document.getElementById('dataset-type')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) : openAuth('signup')}>Start a workflow <ArrowRight size={17} /></button>
+              <button className="button button-primary" onClick={startWorkflow}>Start Generating <ArrowRight size={17} /></button>
               <button className="button button-quiet" onClick={() => goTo('workflow')}>See how it works <ArrowDownRight size={17} /></button>
             </div>
             <div className="hero-footnote"><span className="status-dot" /> Five agents. One reviewable process.</div>

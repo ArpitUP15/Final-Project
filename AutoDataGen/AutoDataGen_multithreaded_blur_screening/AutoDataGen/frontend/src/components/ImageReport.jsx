@@ -1,4 +1,5 @@
 import Metric from "./Metric.jsx";
+import BlurScreeningSummary from "./BlurScreeningSummary.jsx";
 export default function ImageReport({ imageReport }) {
   return (
     <>
@@ -20,6 +21,9 @@ export default function ImageReport({ imageReport }) {
             />
             <Metric label="Validation" value={imageReport.report.validation} />
           </div>
+          <BlurScreeningSummary
+            blurScreening={imageReport.report.blur_screening}
+          />
           <p className="notice">
             Task: {imageReport.report.task_type} · Mode:{" "}
             {imageReport.report.mode} · Seed: {imageReport.report.seed}

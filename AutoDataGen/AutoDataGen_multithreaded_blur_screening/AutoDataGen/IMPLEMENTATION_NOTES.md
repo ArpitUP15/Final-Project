@@ -103,3 +103,7 @@ Unified modality detection and dispatch do not mean all modalities have equivale
 - Image augmentation CPU work runs in Starlette's thread pool so it does not block the FastAPI event loop.
 - The former hard-coded 500 MiB upload rejection is replaced with `AUTODATAGEN_MAX_IMAGE_ZIP_MIB` (default 2048 MiB). Large archives still require sufficient RAM because the current augmentation API and export are in-memory; this is not an unlimited/streaming upload implementation.
 - Verification after changes: `python -m compileall -q app tests` passed; `pytest -q` passed (40 tests).
+
+## Visual blur screening
+
+Image augmentation requires visual blur screening before offline or training-manifest processing; requests that disable screening are rejected. Readable non-mask images are converted to grayscale, images larger than 256×256 are downscaled, and variance of the Laplacian is used as the sharpness score. Images strictly below the configurable threshold (default `100.0`) are removed; unreadable images and masks are retained and reported. For detection and segmentation, paired annotations are removed only when their image is rejected. This is a visual sharpness heuristic, not a semantic quality assessment, and naturally low-texture images may also receive low scores. The UI and `autodatagen_image_report.json` report the method, threshold, per-image scores, and unreadable-image count. The API retains the `blur_filter` and `blur_threshold` form fields; `blur_threshold` now represents a non-negative Laplacian-variance score rather than a percentage.
