@@ -17,6 +17,12 @@ export default function RunReport({
 }) {
   if (!run) return null;
   const progress = run.progress || {};
+  const originalRows =
+    run.analysis?.shape?.rows ??
+    (run.augmentation?.original_training_rows ?? 0) +
+      (run.evaluation?.split?.test_rows_untouched ?? 0);
+  const generatedRows = run.augmentation?.generated_rows ?? 0;
+  const totalRows = originalRows + generatedRows;
   const download = (path) => {
     window.location.href = apiUrl(`/api/runs/${run.run_id}/${path}`);
   };
@@ -495,28 +501,19 @@ export default function RunReport({
             </p>
             <div className="metrics">
               <Metric
-                label="Untouched test rows"
-                value={run.evaluation.split.test_rows_untouched}
+                label="Original dataset rows"
+                value={originalRows}
               />
               <Metric
-                label="Augmented train rows"
-                value={run.augmentation.augmented_training_rows}
+                label="Augmented rows"
+                value={generatedRows}
               />
-              <Metric label="Export rows" value={run.export.rows} />
+              <Metric
+                label="Total rows after augmentation"
+                value={totalRows}
+              />
             </div>
             <p className="notice">{run.evaluation.interpretation}</p>
-            <div className="actions">
-              <button onClick={() => download("download")}>
-                <Download size={16} /> Download dataset
-              </button>
-              <button className="secondary" onClick={() => download("report")}>
-                <FileText size={16} /> Download JSON report
-              </button>
-            </div>
-            <p className="warning">
-              Synthetic data is not guaranteed realistic, unique, private, or
-              better. Validate the results for your domain.
-            </p>
           </section>
         )}
       {run &&
@@ -618,6 +615,18 @@ export default function RunReport({
                 </p>
               )}
             </div>
+            <div className="actions">
+              <button onClick={() => download("download")}>
+                <Download size={16} /> Download dataset
+              </button>
+              <button className="secondary" onClick={() => download("report")}>
+                <FileText size={16} /> Download JSON report
+              </button>
+            </div>
+            <p className="warning">
+              Synthetic data is not guaranteed realistic, unique, private, or
+              better. Validate the results for your domain.
+            </p>
           </section>
         )}
     </>
