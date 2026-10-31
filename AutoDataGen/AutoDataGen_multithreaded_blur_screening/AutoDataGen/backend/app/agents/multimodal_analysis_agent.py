@@ -82,7 +82,7 @@ def analyze_upload(filename: str, content: bytes, dataframe_reader) -> dict:
         profile["summary"] = f"Detected an image dataset with {profile['image_count']} image files; likely task: {profile['task_type']}."
         return profile
     df = dataframe_reader(filename, content)
-    if suffix in TEXT_EXTS or (len(df.columns) == 1 and str(df.columns[0]).lower() in {"text", "content", "sentence", "document"}):
+    if (suffix in TEXT_EXTS and len(df.columns) == 1) or (len(df.columns) == 1 and str(df.columns[0]).lower() in {"text", "content", "sentence", "document"}):
         text_col = str(df.columns[0]) if len(df.columns) else "text"
         values = df[text_col].dropna().astype(str)
         lengths = values.str.len()

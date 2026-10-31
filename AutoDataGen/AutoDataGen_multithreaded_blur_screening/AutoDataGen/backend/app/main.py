@@ -52,12 +52,32 @@ def read_dataset(filename, content):
         if suffix == ".csv":
             return pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
         if suffix == ".txt":
-            # Plain text files are interpreted as one text example per non-empty line.
+            # Support both plain corpora (one text example per line) and labeled
+            # TSV text files such as IMDb reviews: <review>\\t<label>.
             text = content.decode("utf-8-sig")
-            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            lines = [line.rstrip("\\r") for line in text.splitlines() if line.strip()]
             if not lines:
                 raise HTTPException(400, "The .txt file contains no non-empty text lines.")
-            return pd.DataFrame({"text": lines})
+
+            split_rows = [line.rsplit("\\t", 1) for line in lines]
+            tabbed_rows = [parts for parts in split_rows if len(parts) == 2 and parts[0].strip() and parts[1].strip()]
+            if len(tabbed_rows) >= max(2, int(0.8 * len(lines))):
+                # Only interpret the file as labeled TSV when the final field behaves
+                # like a label, rather than treating arbitrary tab-separated text as labels.
+                labels = [parts[1].strip() for parts in tabbed_rows]
+                unique_labels = set(labels)
+                label_like = len(unique_labels) <= max(20, int(len(labels) ** 0.5))
+                if label_like:
+                    # Unlabeled lines cannot be used for supervised training; retain
+                    # valid labeled records and omit malformed/unlabeled lines.
+                    rows = [
+                        (parts[0].strip(), parts[1].strip())
+                        for parts in tabbed_rows
+                    ]
+                    return pd.DataFrame(rows, columns=["text", "label"])
+
+            # Plain text files remain supported as one text example per non-empty line.
+            return pd.DataFrame({"text": [line.strip() for line in lines]})
         if suffix in {".xlsx", ".xlsm"}:
             return pd.read_excel(io.BytesIO(content), engine="openpyxl")
         if suffix == ".xls":
@@ -351,8 +371,8 @@ async def create_run(
     is_single_text_column = len(df.columns) == 1 and not pd.api.types.is_numeric_dtype(df.iloc[:, 0])
     if df.empty or (len(df.columns) < 2 and not is_txt and not is_single_text_column):
         raise HTTPException(400, "Tabular datasets must have rows and at least two columns; text corpora need at least one non-empty text column or TXT line.")
-    if is_txt and target_column != "text":
-        raise HTTPException(400, "For a .txt file, target_column must be 'text'.")
+    if is_txt and len(df.columns) == 1 and target_column != "text":
+        raise HTTPException(400, "For an unlabeled one-column .txt corpus, target_column must be 'text'.")
     # Server-side clamping is authoritative, regardless of client-supplied values.
     max_iterations = min(HARD_MAX_ITERATIONS, max(1, int(max_iterations)))
     target_accuracy = min(0.99, max(0.50, float(target_accuracy)))

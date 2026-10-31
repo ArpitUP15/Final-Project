@@ -27,7 +27,7 @@ export default function DataAugmentationWorkspace({ type }) {
   const plainText = file?.name.toLowerCase().endsWith(".txt");
   const corpus =
     isText &&
-    (plainText ||
+    ((plainText && columns.length === 1) ||
       columns.length === 1 ||
       analysis?.task_type === "text_corpus");
 
